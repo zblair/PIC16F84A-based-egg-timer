@@ -1,0 +1,493 @@
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  1
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00001 ; ******************************************************
+                      00002 ; * The Big Beepin' Timer                              *
+                      00003 ; * ---------------------                              *
+                      00004 ; *                                                    *
+                      00005 ; * May 16 2006                                        *
+                      00006 ; * Copyright (c) Zachary Blair                        *
+                      00007 ; *                                                    *
+                      00008 ; * This is the source code to a timer I designed      *
+                      00009 ; * that contained a Microchip PIC 16F84A              *
+                      00010 ; * microcontroller.                                   *
+                      00011 ; *                                                    *
+                      00012 ; * The mcu is clocked by a 32.768 kHz crystal, and    *
+                      00013 ; * it drives three seven segment displays using PORT  *
+                      00014 ; * B pins 7-1 and the first three pins in PORT A.     *
+                      00015 ; * It also drives a buzzer using PORT A bit 3         *
+                      00016 ; * (i.e. the 4th bit on port A). The MCU also has a   *
+                      00017 ; * push button attached to PORT B pin 0 that acts as  *
+                      00018 ; * a start or reset button to the timer. The button   *
+                      00019 ; * shows a logic '1' on RB0 when it is not pressed,   *
+                      00020 ; * a logic '0' when it is pressed.                    *
+                      00021 ; *                                                    *
+                      00022 ; * Basically, when the button is pressed, the timer   *
+                      00023 ; * starts counting down from 3 minutes, and it shows  *
+                      00024 ; * the current time on the three seven-segment        *
+                      00025 ; * displays. At any point, pressing the button again  *
+                      00026 ; * will reset the timer to 3 minutes and restart the  *
+                      00027 ; * countdown. When the timer reaches zero, it         *
+                      00028 ; * activates the buzzer for 1 second, and then the    *
+                      00029 ; * buzzer and all of the displays turn off and the    *
+                      00030 ; * device switches to its low-power mode, where it    *
+                      00031 ; * consumes very little power (it should last for     *
+                      00032 ; * months on low-power mode). When the user again     *
+                      00033 ; * presses the button, the device is awakened and is  *
+                      00034 ; * reset to 3 minutes, and the cycle begins again.    *
+                      00035 ; ******************************************************
+                      00036 
+                      00037         include "p16F84a.inc"
+                      00001         LIST
+                      00002 
+                      00003 ;==========================================================================
+                      00004 ;  MPASM PIC16F84A processor include
+                      00005 ; 
+                      00006 ;  (c) Copyright 1999-2012 Microchip Technology, All rights reserved
+                      00007 ;==========================================================================
+                      00008 
+                      00208         LIST
+                      00038 
+                      00039 ; We are using _LP_OXC because we are using a 32.768 kHz crystal
+2007   3FF0           00040         __config _CP_OFF & _WDT_OFF & _LP_OSC & _PWRTE_ON 
+                      00041 
+                      00042 ; ******************************************************
+                      00043 ; * Variable declarations                              *
+                      00044 ; ******************************************************
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  2
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00045         cblock 20h
+  00000020            00046                 _work:1, _status:1,     minutes:1, secondsH:1
+  00000024            00047                 secondsL:1, delay_count:1, timeout:1
+                      00048         endc
+                      00049 
+                      00050 ; ******************************************************
+                      00051 ; * Macro and constant declarations                    *
+                      00052 ; ******************************************************
+                      00053 
+                      00054 SetTimeTo3Min macro     ; Set time to 3 min 
+                      00055         movlw d'3'
+                      00056         movwf minutes
+                      00057         clrf secondsH
+                      00058         clrf secondsL
+                      00059         ; Turn off the zero indicator (PORTA bit 3)
+                      00060         bcf PORTA, 3
+                      00061         endm
+                      00062 
+  00000002            00063 TIMEOUT_SECONDS equ     d'2'    ; Sound the beeper for only 1 second
+                      00064 
+                      00065 ; ******************************************************
+                      00066 ; * Reset and Interrupt vectors                        *
+                      00067 ; ******************************************************
+                      00068 
+                      00069         org 0           ; Reset vector
+0000   2???           00070         goto MAIN
+                      00071 
+                      00072         org 4           ; Interrupt vector
+0004   2???           00073         goto ISR
+                      00074 
+                      00075 ; ******************************************************
+                      00076 ; * The main section is called on startup and reset.   *
+                      00077 ; * It performs initialization, and then enters the    *
+                      00078 ; * main loop, where it continually refreshes the      *
+                      00079 ; * seven segment displays.                            *
+                      00080 ; ******************************************************
+0005                  00081 MAIN
+                      00082         ; Initialize
+0005   0185           00083         clrf PORTA                      ; Start with all displays off.
+                      00084 
+0006   1683           00085         bsf STATUS, RP0         ; Go to Bank 1 for OPTION_REG.
+0007   3004           00086         movlw b'00000100'       ; Assign prescaler to TMR0,
+0008   0081           00087         movwf OPTION_REG ^ 0x080        ; ratio 1:32, internal clock
+0009   0185           00088         clrf TRISA ^ 0x080                      ; Set all port A pins to outputs
+000A   3001           00089         movlw b'00000001'
+000B   0086           00090         movwf TRISB ^ 0x080     ; Set RB0 as input, and and RB1-RB7 an output
+000C   1283           00091         bcf STATUS, RP0         ; Switch back to Bank 0
+                      00092 
+                      00093         SetTimeTo3Min           ; Initially, start at 3 minutes
+000D   3003               M         movlw d'3'
+000E   00A2               M         movwf minutes
+000F   01A3               M         clrf secondsH
+0010   01A4               M         clrf secondsL
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  3
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                          M         ; Turn off the zero indicator (PORTA bit 3)
+0011   1185               M         bcf PORTA, 3
+0012   3002           00094         movlw TIMEOUT_SECONDS   ; Set the sleep timeout
+0013   00A6           00095         movwf timeout
+                      00096 
+0014   168B           00097         bsf INTCON,T0IE         ; Enable TMR0 interrupt
+0015   160B           00098         bsf INTCON,INTE         ; Enable INTE interrupt
+                      00099                                                 ; on the rising edge (default)
+                      00100 
+0016   0181           00101         clrf TMR0                       ; Set TMR0 to zero
+0017   178B           00102         bsf INTCON,GIE          ; Enable interrupts
+                      00103 
+                      00104         ; When the batteries are first inserted, do not have the
+                      00105         ; screen display anything. Wait for the user to press the
+                      00106         ; big red button!
+0018   0063           00107         sleep
+                      00108         
+                      00109         ; Loop forever, refreshing the display
+                      00110         ; at a rate dependant on the Delay
+                      00111         ; subroutine.
+0019                  00112 MAIN_LOOP
+                      00113         ; If RB0 is low, set t=3min
+                      00114         ; and set TMR0 to zero
+0019   1806           00115         btfsc PORTB,0
+001A   2???           00116         goto BUTTON_UP
+                      00117         SetTimeTo3Min
+001B   3003               M         movlw d'3'
+001C   00A2               M         movwf minutes
+001D   01A3               M         clrf secondsH
+001E   01A4               M         clrf secondsL
+                          M         ; Turn off the zero indicator (PORTA bit 3)
+001F   1185               M         bcf PORTA, 3
+0020   0181           00118         clrf TMR0       
+                      00119 
+0021                  00120 BUTTON_UP
+0021   0824           00121         movfw secondsL          
+0022   2???           00122         call BinaryToSevenSegment 
+0023   0086           00123         movwf PORTB                     ; Put the rightmost digit on B
+                      00124 
+                      00125 
+0024   1405           00126         bsf PORTA, 0            ; Turn on only the rightmost display
+0025   2???           00127         call Delay                      ; Wait
+0026   1005           00128         bcf PORTA, 0            ; Turn off the rightmost display
+                      00129 
+0027   0823           00130         movfw secondsH          
+0028   2???           00131         call BinaryToSevenSegment
+0029   0086           00132         movwf PORTB                     ; Put the middle digit on B
+                      00133 
+002A   1485           00134         bsf PORTA, 1            ; Turn on only the middle display
+002B   2???           00135         call Delay                      ; Wait
+002C   1085           00136         bcf PORTA, 1            ; Turn off the middle display
+                      00137 
+002D   0822           00138         movfw minutes           
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  4
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+002E   2???           00139         call BinaryToSevenSegment
+002F   0086           00140         movwf PORTB                     ; Put the leftmost digit on B
+                      00141         
+0030   1505           00142         bsf PORTA, 2            ; Turn on only the leftmost display
+0031   2???           00143         call Delay                      ; Wait
+0032   1105           00144         bcf PORTA, 2            ; Turn off the leftmost display
+                      00145                 
+0033   2???           00146         goto MAIN_LOOP
+                      00147 
+                      00148 ; ******************************************************
+                      00149 ; * This subroutine takes a binary byte between 0 and  *
+                      00150 ; * 9 and turns it into a seven-segment bitmap.        *
+                      00151 ; * Input: a binary number in W between 0 and 9        *
+                      00152 ; * Output: a seven-segment bitmap in W.               *
+                      00153 ; ******************************************************
+0034                  00154 BinaryToSevenSegment
+0034   0782           00155         addwf PCL,f                     ; Jump to entry specified by w.
+0035   3480           00156         retlw b'10000000'               ; 0
+0036   34F2           00157         retlw b'11110010'               ; 1
+0037   3448           00158         retlw b'01001000'               ; 2
+0038   3460           00159         retlw b'01100000'               ; 3
+0039   3432           00160         retlw b'00110010'               ; 4
+003A   3424           00161         retlw b'00100100'               ; 5
+003B   3404           00162         retlw b'00000100'               ; 6
+003C   34F0           00163         retlw b'11110000'               ; 7
+003D   3400           00164         retlw b'00000000'               ; 8
+003E   3430           00165         retlw b'00110000'               ; 9
+                      00166 
+                      00167 ; ******************************************************
+                      00168 ; * This subroutine generates a short delay of         *
+                      00169 ; * at least approx. 0.37 ms * (initial delay_count)   *
+                      00170 ; * Note: the delay is not exact because interrupts    *
+                      00171 ; * may occur during the loop.                         *
+                      00172 ; ******************************************************
+003F   3011           00173 Delay   movlw 0x11
+0040   00A5           00174                 movwf delay_count
+0041                  00175 Delay_loop
+0041   0BA5           00176                 decfsz delay_count,f            
+0042   2???           00177                 goto Delay_loop
+0043   0008           00178                 return   
+                      00179 
+                      00180 ; ******************************************************
+                      00181 ; * This ISR is called in response to a TMR0 overflow. *
+                      00182 ; * It decrements the minutes and seconds  variables   *
+                      00183 ; * until they reach zero. At zero, it activates the   *
+                      00184 ; * buzzer for 1 second and then puts the device in    *
+                      00185 ; * sleep mode. When RBO is pressed, the device wakes  *
+                      00186 ; * up.                                                *
+                      00187 ; ******************************************************
+0044                  00188 ISR
+                      00189         ; Save the context
+0044   00A0           00190         movwf _work             ; Put away W
+0045   0E03           00191         swapf STATUS,w  ; and the Status register
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  5
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+0046   00A1           00192         movwf _status
+                      00193 
+                      00194         ; Check if this interrupt was triggered by RB0
+                      00195         ; changing or by a TMR0 overflow.
+0047   1C8B           00196         btfss INTCON, INTF
+0048   2???           00197         goto TIMER_TRIGGERED
+0049                  00198 BUTTON_TRIGGERED
+                      00199         ; Reset the interrupt flag
+0049   108B           00200         bcf INTCON, INTF
+                      00201         ; This is a rising edge (the button is released
+                      00202         ; after being pressed), so we will start timing
+                      00203         ; at exactly this point.
+004A   0181           00204         clrf TMR0;
+                      00205         ; Do not increment the time digits
+004B   2???           00206         goto ISR_CLEANUP
+                      00207 
+004C                  00208 TIMER_TRIGGERED
+                      00209         ; Reset the interrupt flag
+004C   110B           00210         bcf INTCON,T0IF
+                      00211 
+                      00212         ; If the button is pressed, don't increment
+                      00213         ; the time digits.
+004D   1C06           00214         btfss PORTB,0
+004E   2???           00215         goto ISR_CLEANUP
+                      00216 
+004F                  00217 INCREMENT_TIME
+                      00218 
+004F   08A4           00219         movf secondsL,f
+0050   1D03           00220         btfss STATUS,Z  ; If secondsL == 0, goto ZERO_SECL
+0051   2???           00221         goto NONZERO_SECL
+0052                  00222 ZERO_SECL
+0052   08A3           00223         movf secondsH,f
+0053   1D03           00224         btfss STATUS,Z  ; If secondsH == 0, goto ZERO_SECH
+0054   2???           00225         goto NONZERO_SECH
+0055                  00226 ZERO_SECH
+0055   08A2           00227         movf minutes,f
+0056   1D03           00228         btfss STATUS,Z  ; If minutes == 0, goto ZERO_MIN
+0057   2???           00229         goto NONZERO_MIN
+0058                  00230 ZERO_MIN
+                      00231         ; Minutes and secondsH and secondsL are 0
+                      00232         ; Turn on the zero indicator (the buzzer on PORTA bit 3)
+0058   1585           00233         bsf PORTA, 3
+                      00234 
+                      00235         ; If (timeout-- == 0) then sleep until the button is released
+0059   0BA6           00236         decfsz timeout,f
+005A   2???           00237         goto ISR_CLEANUP
+                      00238 
+                      00239         ; Turn off the zero indicator (the buzzer on PORTA bit 3)
+005B   1185           00240         bcf PORTA, 3
+                      00241 
+                      00242         ; Clear all of the displays
+005C   0805           00243         movfw PORTA
+005D   0185           00244         clrf PORTA                      ; Turn off all the displays
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  6
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00245 
+005E   0063           00246         sleep                           ; Wait for someone to press a button
+                      00247 
+005F   0085           00248         movwf PORTA                     ; Restore the previous PORTA value.
+                      00249         
+0060   3002           00250         movlw TIMEOUT_SECONDS   ; Reset the timeout
+0061   00A6           00251         movwf timeout
+                      00252 
+                      00253         ; Since the button is pressed, start from 3 min
+                      00254         SetTimeTo3Min
+0062   3003               M         movlw d'3'
+0063   00A2               M         movwf minutes
+0064   01A3               M         clrf secondsH
+0065   01A4               M         clrf secondsL
+                          M         ; Turn off the zero indicator (PORTA bit 3)
+0066   1185               M         bcf PORTA, 3
+0067   0181           00255         clrf TMR0       
+                      00256 
+0068   2???           00257         goto ISR_CLEANUP
+                      00258                 
+0069                  00259 NONZERO_MIN
+0069   03A2           00260         decf minutes,f  ; minutes--
+006A   3005           00261         movlw d'5'              
+006B   00A3           00262         movwf secondsH  
+006C   3009           00263         movlw d'9'
+006D   00A4           00264         movwf secondsL ; seconds = 59   
+006E   2???           00265         goto ISR_CLEANUP
+006F                  00266 NONZERO_SECH
+006F   03A3           00267         decf secondsH,f
+0070   3009           00268         movlw d'9'
+0071   00A4           00269         movwf secondsL
+0072   2???           00270         goto ISR_CLEANUP
+0073                  00271 NONZERO_SECL
+0073   03A4           00272         decf secondsL,f
+                      00273 
+0074                  00274 ISR_CLEANUP
+                      00275         ; Restore the context
+0074   0E21           00276         swapf _status,w
+0075   0083           00277         movwf STATUS
+0076   0EA0           00278         swapf _work,f
+0077   0E20           00279         swapf _work,w
+0078   0009           00280         retfie
+                      00281         
+3FF0                  00282         end
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  7
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+BUTTON_TRIGGERED                  00000049
+BUTTON_UP                         00000021
+BinaryToSevenSegment              00000034
+C                                 00000000
+DC                                00000001
+Delay                             0000003F
+Delay_loop                        00000041
+EEADR                             00000009
+EECON1                            00000088
+EECON2                            00000089
+EEDATA                            00000008
+EEIE                              00000006
+EEIF                              00000004
+F                                 00000001
+FSR                               00000004
+GIE                               00000007
+INCREMENT_TIME                    0000004F
+INDF                              00000000
+INTCON                            0000000B
+INTE                              00000004
+INTEDG                            00000006
+INTF                              00000001
+IRP                               00000007
+ISR                               00000044
+ISR_CLEANUP                       00000074
+MAIN                              00000005
+MAIN_LOOP                         00000019
+NONZERO_MIN                       00000069
+NONZERO_SECH                      0000006F
+NONZERO_SECL                      00000073
+NOT_PD                            00000003
+NOT_RBPU                          00000007
+NOT_TO                            00000004
+OPTION_REG                        00000081
+PCL                               00000002
+PCLATH                            0000000A
+PORTA                             00000005
+PORTB                             00000006
+PS0                               00000000
+PS1                               00000001
+PS2                               00000002
+PSA                               00000003
+RA0                               00000000
+RA1                               00000001
+RA2                               00000002
+RA3                               00000003
+RA4                               00000004
+RB0                               00000000
+RB1                               00000001
+RB2                               00000002
+RB3                               00000003
+RB4                               00000004
+RB5                               00000005
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  8
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+RB6                               00000006
+RB7                               00000007
+RBIE                              00000003
+RBIF                              00000000
+RD                                00000000
+RP0                               00000005
+RP1                               00000006
+STATUS                            00000003
+SetTimeTo3Min                     
+T0CS                              00000005
+T0IE                              00000005
+T0IF                              00000002
+T0SE                              00000004
+TIMEOUT_SECONDS                   00000002
+TIMER_TRIGGERED                   0000004C
+TMR0                              00000001
+TMR0IE                            00000005
+TMR0IF                            00000002
+TRISA                             00000085
+TRISA0                            00000000
+TRISA1                            00000001
+TRISA2                            00000002
+TRISA3                            00000003
+TRISA4                            00000004
+TRISB                             00000086
+TRISB0                            00000000
+TRISB1                            00000001
+TRISB2                            00000002
+TRISB3                            00000003
+TRISB4                            00000004
+TRISB5                            00000005
+TRISB6                            00000006
+TRISB7                            00000007
+W                                 00000000
+WR                                00000001
+WREN                              00000002
+WRERR                             00000003
+Z                                 00000002
+ZERO_MIN                          00000058
+ZERO_SECH                         00000055
+ZERO_SECL                         00000052
+_CONFIG                           00002007
+_CP_OFF                           00003FFF
+_CP_ON                            0000000F
+_DEVID1                           00002006
+_FOSC_EXTRC                       00003FFF
+_FOSC_HS                          00003FFE
+_FOSC_LP                          00003FFC
+_FOSC_XT                          00003FFD
+_HS_OSC                           00003FFE
+_IDLOC0                           00002000
+_IDLOC1                           00002001
+_IDLOC2                           00002002
+MPASM  5.46                         TIMER.ASM   8-5-2012  21:33:42         PAGE  9
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+_IDLOC3                           00002003
+_LP_OSC                           00003FFC
+_PWRTE_OFF                        00003FFF
+_PWRTE_ON                         00003FF7
+_RC_OSC                           00003FFF
+_WDTE_OFF                         00003FFB
+_WDTE_ON                          00003FFF
+_WDT_OFF                          00003FFB
+_WDT_ON                           00003FFF
+_XT_OSC                           00003FFD
+__16F84A                          00000001
+_status                           00000021
+_work                             00000020
+delay_count                       00000025
+minutes                           00000022
+secondsH                          00000023
+secondsL                          00000024
+timeout                           00000026
+
+Errors   :     0
+Warnings :     0 reported,     0 suppressed
+Messages :     0 reported,     0 suppressed
+
+
